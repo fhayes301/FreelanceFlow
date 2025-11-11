@@ -1,0 +1,75 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Core models
+
+model Category {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  color     String? // optional HEX like #A3E635 for UI
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  templates BillTemplate[]
+  bills     Bill[]
+}
+
+// Only for recurring base data
+model BillTemplate {
+  id           String   @id @default(cuid())
+  name         String
+  categoryId   String
+  amountDefault Decimal   @db.Decimal(10, 2)
+  dueDayDefault Int       // 1-31, we will clamp to last day of month in code
+  isActive     Boolean  @default(true)
+  notes        String?
+  bankAccountDefault String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // relations
+  category   Category  @relation(fields: [categoryId], references: [id])
+  bills      Bill[]
+}
+
+model Bill {
+  id          String   @id @default(cuid())
+  name        String
+  categoryId  String
+  templateId  String?  // nullable for one-off bills
+  amountDue   Decimal  @db.Decimal(10, 2)
+  dueDate     DateTime
+  isRecurring Boolean  @default(false)
+  isPaid      Boolean  @default(false)
+  month       String   // format: YYYY-MM for easy filtering
+  bankAccount String?
+  carriedOver Boolean  @default(false)
+  carriedOverFromId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // relations
+  category   Category  @relation(fields: [categoryId], references: [id])
+  template   BillTemplate? @relation(fields: [templateId], references: [id])
+  carriedOverFrom Bill? @relation("BillCarryover", fields: [carriedOverFromId], references: [id])
+  carriedOverChildren Bill[] @relation("BillCarryover")
+
+  @@index([month])
+  @@index([categoryId])
+  @@unique([month, templateId]) // only one generated bill per template per month
+  @@unique([month, carriedOverFromId]) // only one carryover per source per month
+}

@@ -1,101 +1,141 @@
-import Image from "next/image";
+import Link from "next/link";
+import prisma from "@/lib/prisma";
+import { ensureMonthGenerated } from "@/server/regenerate";
+import { toMonthKey, formatCurrency, formatMonthKeyMMYYYY } from "@/lib/month";
+import NewBillModal from "@/components/NewBillModal";
+import NewTemplateModal from "@/components/NewTemplateModal";
+import BillTable from "@/components/BillTable";
+import { deleteTemplate } from "@/server/actions";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const nowKey = toMonthKey(new Date());
+  await ensureMonthGenerated(nowKey);
+
+  const categories = await prisma.category.findMany({ select: { id: true, name: true } });
+  const templates = await prisma.billTemplate.findMany({ include: { category: true }, orderBy: { name: "asc" } });
+  const billsCurrent = await prisma.bill.findMany({
+    where: { month: nowKey },
+    include: { category: true },
+    orderBy: [{ isPaid: "asc" }, { dueDate: "asc" }, { name: "asc" }],
+  });
+
+  const unpaidPast = await prisma.bill.findMany({
+    where: {
+      isPaid: false,
+      month: { lt: nowKey },
+      carriedOverChildren: { none: { month: nowKey } },
+    },
+    include: { category: true },
+    orderBy: [{ dueDate: "asc" }, { name: "asc" }],
+  });
+
+  const bills = [...billsCurrent, ...unpaidPast];
+
+  // Sort with carryovers (past months OR marked carriedOver) first, then by due date ascending, then unpaid before paid, then by name
+  const billsSorted = [...bills].sort((a, b) => {
+    const aCarry = (a as any).carriedOver === true || a.month !== nowKey;
+    const bCarry = (b as any).carriedOver === true || b.month !== nowKey;
+    if (aCarry !== bCarry) return aCarry ? -1 : 1;
+    const aTime = a.dueDate instanceof Date ? a.dueDate.getTime() : new Date(a.dueDate as unknown as string).getTime();
+    const bTime = b.dueDate instanceof Date ? b.dueDate.getTime() : new Date(b.dueDate as unknown as string).getTime();
+    if (aTime !== bTime) return aTime - bTime;
+    if (a.isPaid !== b.isPaid) return Number(a.isPaid) - Number(b.isPaid);
+    return a.name.localeCompare(b.name);
+  });
+
+  const total = bills.reduce((acc, b) => acc + Number(b.amountDue), 0);
+  const paid = bills.filter((b) => b.isPaid).reduce((acc, b) => acc + Number(b.amountDue), 0);
+  const remaining = total - paid;
+  const pct = total > 0 ? Math.round((paid / total) * 100) : 0;
+
+  // Amount due in the next seven days (unpaid only)
+  const today = new Date();
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const sevenDaysOut = new Date(startOfToday);
+  sevenDaysOut.setDate(sevenDaysOut.getDate() + 7);
+  const nextSevenTotal = bills
+    .filter((b) => !b.isPaid && b.dueDate >= startOfToday && b.dueDate <= sevenDaysOut)
+    .reduce((acc, b) => acc + Number(b.amountDue), 0);
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Freelance Flow</h1>
+        <nav className="flex items-center gap-4 text-sm text-gray-600">
+          <Link className="hover:underline" href={`/bills/${nowKey}`}>This month</Link>
+          <Link className="hover:underline" href="/categories">Categories</Link>
+        </nav>
+      </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <div className="flex items-center gap-3">
+        <NewBillModal month={nowKey} categories={categories} />
+        <NewTemplateModal categories={categories} />
+      </div>
+
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="p-4 border rounded">
+          <div className="text-sm text-gray-500">Total due</div>
+          <div className="text-xl font-semibold">{formatCurrency(total)}</div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <div className="p-4 border rounded">
+          <div className="text-sm text-gray-500">Paid</div>
+          <div className="text-xl font-semibold text-green-600">{formatCurrency(paid)}</div>
+        </div>
+        <div className="p-4 border rounded">
+          <div className="text-sm text-gray-500">Remaining</div>
+          <div className="text-xl font-semibold text-amber-600">{formatCurrency(remaining)}</div>
+          <div className="h-2 bg-gray-200 rounded mt-2">
+            <div className="h-2 bg-green-500 rounded" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      </section>
+
+      <section className="p-4 border rounded">
+        <div className="text-sm text-gray-500">Amount due in next seven days</div>
+        <div className="text-xl font-semibold text-amber-700">{formatCurrency(nextSevenTotal)}</div>
+      </section>
+
+      {/* {templates.length > 0 && (
+        <section className="p-4 border rounded">
+          <h3 className="font-medium text-sm mb-2">Templates</h3>
+          <ul className="divide-y">
+            {templates.map((t) => (
+              <li key={t.id} className="py-2 flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-900">{t.name}</span>
+                  <span className="text-gray-500">({t.category?.name ?? ""})</span>
+                </div>
+                <form action={async () => { "use server"; await deleteTemplate(t.id, nowKey); }}>
+                  <button type="submit" className="text-red-600 hover:underline">Delete</button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )} */}
+
+      <section className="p-4 border rounded">
+        <h2 className="font-medium mb-2">Bills — {formatMonthKeyMMYYYY(nowKey)}</h2>
+        <BillTable
+          month={nowKey}
+          bills={billsSorted.map((b) => ({
+            id: b.id,
+            name: b.name,
+            categoryId: b.categoryId,
+            categoryName: b.category?.name ?? "",
+            amountDue: Number(b.amountDue),
+            dueDateISO: b.dueDate.toISOString(),
+            isRecurring: b.isRecurring,
+            isPaid: b.isPaid,
+            month: b.month,
+            bankAccount: (b as any).bankAccount ?? null,
+            // Mark any bill from a prior month as carried over for dashboard context
+            carriedOver: b.month !== nowKey ? true : ((b as any).carriedOver ?? false),
+          }))}
+        />
+      </section>
     </div>
   );
 }
