@@ -186,6 +186,3 @@ MIT — see `LICENSE` for full text. Free to use, modify, and distribute.
 
 ## Credits
 Built with Next.js, Prisma, Tailwind. Fonts: Geist by Vercel. Inspiration: the pain of scrappy spreadsheets and missed freelance due dates.
-
----
-Enjoy smoother months ✨ — contributions and suggestions welcome.
